@@ -1,0 +1,20 @@
+OHLI SOCIAL v3.6.21 — BUILD WORKFLOW HOTFIX 1
+
+Penyebab error CI:
+- GitHub Actions gagal pada `gradle/actions/setup-gradle@v4` saat action
+  memprovisikan Gradle 8.9; server mengembalikan HTTP 504.
+- Ini adalah kegagalan pengunduhan/provisioning Gradle, bukan error Java atau
+  error source OHLI.
+
+Perbaikan:
+- Menghapus provisioning Gradle melalui input `gradle-version`.
+- Mengunduh distribusi Gradle 8.9 langsung dari host distribusi resmi dengan
+  retry otomatis untuk HTTP 5xx/504 dan timeout koneksi.
+- Mencoba `downloads.gradle.org` lalu `services.gradle.org` sebagai fallback.
+- Memvalidasi SHA-256 yang dipatok dari daftar checksum resmi Gradle sebelum mengekstrak distribusi.
+- Menggunakan actions/cache untuk cache dependency Gradle.
+- Perintah build aplikasi tetap `gradle :app:assembleDebug --stacktrace`.
+- Versi aplikasi tetap 3.6.21 / versionCode 50; tidak ada perubahan runtime.
+
+Catatan: bila kedua host distribusi resmi sama-sama tidak tersedia, build masih
+dapat gagal karena gangguan jaringan eksternal. Ulangi workflow saat layanan pulih.
