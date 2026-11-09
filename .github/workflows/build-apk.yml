@@ -1,0 +1,141 @@
+name: Build OHLI Social Server APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build OHLI Social for Android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate Android Gradle project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_DIR=""
+
+          # Preferred path: keep the complete source ZIP in the repository root.
+          ARCHIVE="OHLI-Social-Source-v3.6.21-buildfix1.zip"
+          if [ -f "$ARCHIVE" ]; then
+            mkdir -p .rk-build-src
+            unzip -q -o "$ARCHIVE" -d .rk-build-src
+            SOURCE_DIR="$GITHUB_WORKSPACE/.rk-build-src"
+          # Alternative: source was already extracted into the repository root.
+          elif [ -f "$GITHUB_WORKSPACE/settings.gradle" ] && [ -f "$GITHUB_WORKSPACE/app/build.gradle" ]; then
+            SOURCE_DIR="$GITHUB_WORKSPACE"
+          else
+            # Alternative: source lives one or more folders below repository root.
+            SETTINGS_FILE=$(find . -mindepth 2 -maxdepth 5 -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
+            if [ -n "$SETTINGS_FILE" ]; then
+              SOURCE_DIR="$(cd "$(dirname "$SETTINGS_FILE")" && pwd)"
+            fi
+          fi
+
+          if [ -z "$SOURCE_DIR" ] || [ ! -f "$SOURCE_DIR/settings.gradle" ] || [ ! -f "$SOURCE_DIR/app/build.gradle" ]; then
+            echo "Gradle project tidak ditemukan. Unggah ZIP v3.6.21 ke root repository atau ekstrak semua isi source ke root." >&2
+            echo "Isi root repository:"
+            ls -la
+            exit 1
+          fi
+
+          echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+          echo "Android project ditemukan di: $SOURCE_DIR"
+          echo "Gradle settings:"
+          sed -n '1,80p' "$SOURCE_DIR/settings.gradle"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-cache-${{ hashFiles('**/*.gradle*', '**/gradle.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-cache-
+
+      # Avoid the Gradle provisioning endpoint used by setup-gradle's
+      # gradle-version input. That endpoint returned HTTP 504 in CI.
+      # Download the official distribution directly with retries and SHA-256 verification.
+      - name: Install Gradle 8.9 with retry and checksum verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIST="$RUNNER_TEMP/gradle-8.9-bin.zip"
+          GRADLE_BASE="$RUNNER_TEMP/gradle-8.9"
+          # Official SHA-256 published by Gradle for gradle-8.9-bin.zip.
+          EXPECTED_SHA256="d725d707bfabd4dfdc958c624003b3c80accc03f7037b5122c4b1d0ef15cecab"
+          downloaded=0
+
+          for BASE_URL in \
+            "https://downloads.gradle.org/distributions" \
+            "https://services.gradle.org/distributions"; do
+            echo "Mencoba distribusi Gradle dari $BASE_URL"
+            rm -f "$DIST"
+            if curl --fail --location --show-error \
+                 --retry 5 --retry-all-errors --retry-delay 5 \
+                 --connect-timeout 20 --max-time 900 \
+                 "$BASE_URL/gradle-8.9-bin.zip" -o "$DIST"; then
+              actual="$(sha256sum "$DIST" | awk '{print $1}')"
+              if [ "$EXPECTED_SHA256" = "$actual" ]; then
+                downloaded=1
+                break
+              fi
+              echo "Checksum Gradle tidak cocok dari $BASE_URL" >&2
+            fi
+          done
+
+          if [ "$downloaded" -ne 1 ]; then
+            echo "Gagal mengunduh distribusi Gradle 8.9 dari kedua host resmi setelah retry." >&2
+            exit 1
+          fi
+
+          rm -rf "$GRADLE_BASE"
+          mkdir -p "$GRADLE_BASE"
+          unzip -q "$DIST" -d "$GRADLE_BASE"
+          test -x "$GRADLE_BASE/gradle-8.9/bin/gradle"
+          echo "$GRADLE_BASE/gradle-8.9/bin" >> "$GITHUB_PATH"
+          echo "Gradle 8.9 terpasang dan checksum SHA-256 valid."
+
+      - name: Verify Gradle project root
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_DIR"
+          test -f settings.gradle
+          test -f build.gradle
+          test -f app/build.gradle
+          echo "Building from: $(pwd)"
+          gradle --version
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SOURCE_DIR"
+          gradle :app:assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OHLI-Social-Server-APK-v3.6.21-buildfix1
+          path: ${{ env.SOURCE_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
